@@ -1,69 +1,102 @@
-require("dotenv").config();
-const express = require("express");
-const { SchedulerClient, CreateScheduleCommand } = require("@aws-sdk/client-scheduler");
+import express from "express";
+import dotenv from "dotenv";
+import {
+  SchedulerClient,
+  CreateScheduleCommand
+} from "@aws-sdk/client-scheduler";
+
+/* =========================
+   BOOTSTRAP
+========================= */
+console.log("🚀 Starting application...");
+dotenv.config();
+console.log("✅ Environment variables loaded");
 
 const app = express();
 app.use(express.json());
+console.log("✅ Express initialized");
 
-const schedulerClient = new SchedulerClient({
+/* =========================
+   AWS SCHEDULER CLIENT
+========================= */
+console.log("🔧 Initializing AWS Scheduler client...");
+const scheduler = new SchedulerClient({
   region: process.env.AWS_REGION
 });
+console.log("✅ AWS Scheduler client ready");
 
-/* ===============================
-   1️⃣ HEALTH
-================================ */
+/* =========================
+   HEALTH CHECK
+========================= */
 app.get("/health", (req, res) => {
-  console.log(`[${new Date().toISOString()}] GET /health`);
-  res.json({ status: "OK" });
+  console.log("--------------------------------------------------");
+  console.log("🟢 /health endpoint hit");
+  console.log("🕒 Time:", new Date().toISOString());
+  console.log("📡 Request IP:", req.ip);
+
+  res.json({
+    status: "OK",
+    time: new Date().toISOString()
+  });
 });
 
-/* ===============================
-   2️⃣ CREATE SCHEDULE FROM API
-================================ */
+/* =========================
+   API #1 – CREATE SCHEDULE
+========================= */
 app.post("/publish-event", async (req, res) => {
-  const { eventName, payload } = req.body;
-  const executeAt = new Date(Date.now() + 3 * 60 * 1000);
-
-  if (!executeAt || !eventName) {
-    return res.status(400).json({
-      message: "executeAt and eventName are required"
-    });
-  }
-
-  const scheduleName = `schedule-${Date.now()}`;
-
-  console.log("📅 Execute At:", executeAt);
-  console.log("🧾 Payload:", payload);
+  console.log("--------------------------------------------------");
+  console.log("📥 /publish-event endpoint hit");
+  console.log("🕒 Request Time:", new Date().toISOString());
+  console.log("📦 Request Body:", req.body);
 
   try {
+    const { eventName, payload, delayMinutes } = req.body;
+
+    console.log("🔍 Validating request payload...");
+
+    if (!eventName || !payload || !delayMinutes) {
+      console.log("❌ Validation failed");
+      return res.status(400).json({
+        message: "eventName, payload and delayMinutes are required"
+      });
+    }
+
+    console.log("✅ Validation passed");
+
+    /* ---- Calculate execution time ---- */
+    console.log("⏱ Calculating execution time...");
+    const executeAt = new Date(Date.now() + delayMinutes * 60 * 1000);
+    console.log("📅 Event will execute at:", executeAt.toISOString());
+
+    /* ---- Schedule name ---- */
+    const scheduleName = `schedule-${Date.now()}`;
+    console.log("🆔 Generated schedule name:", scheduleName);
+
+    /* ---- Build scheduler command ---- */
+    console.log("🛠 Building CreateScheduleCommand...");
     const command = new CreateScheduleCommand({
       Name: scheduleName,
-      ScheduleExpression: `at(${new Date(executeAt).toISOString()})`,
+
+      ScheduleExpression: `at(${executeAt.toISOString()})`,
       FlexibleTimeWindow: { Mode: "OFF" },
 
       Target: {
-        Arn: process.env.EVENT_RECEIVER_URL,
+        Arn: process.env.API_DESTINATION_ARN,
         RoleArn: process.env.SCHEDULER_ROLE_ARN,
-
-        HttpParameters: {
-          HeaderParameters: {
-            "x-api-key": "my-secret-key-123",
-            "Content-Type": "application/json"
-          }
-        },
-
         Input: JSON.stringify({
           eventName,
           payload,
-          executeAt
+          executedAt: executeAt.toISOString()
         })
-      },
-      ActionAfterCompletion: "DELETE" // 🔥 auto cleanup
+      }
     });
 
-    await schedulerClient.send(command);
+    console.log("📤 Sending schedule creation request to AWS...");
 
-    console.log("✅ Scheduler created:", scheduleName);
+    await scheduler.send(command);
+
+    console.log("✅ Scheduler created successfully");
+    console.log("📌 Schedule Name:", scheduleName);
 
     res.json({
       message: "Event scheduled successfully",
@@ -71,36 +104,59 @@ app.post("/publish-event", async (req, res) => {
       executeAt
     });
 
-  } catch (err) {
-    console.error("❌ Scheduler error:", err);
+  } catch (error) {
+    console.log("--------------------------------------------------");
+    console.error("❌ ERROR while creating scheduler");
+    console.error("🧨 Error message:", error.message);
+    console.error("🧾 Full error:", error);
+
     res.status(500).json({
       message: "Failed to create scheduler",
-      error: err.message
+      error: error.message
     });
   }
 });
 
-/* ===============================
-   3️⃣ EVENT RECEIVER
-================================ */
+/* =========================
+   API #2 – EVENT RECEIVER
+========================= */
 app.post("/event-receiver", (req, res) => {
-  console.log("🔥 EVENT RECEIVED 🔥");
-  console.log("Time:", new Date().toISOString());
-  console.log("Body:", JSON.stringify(req.body, null, 2));
-  console.log("headers:", JSON.stringify(req.headers, null, 2));
-  const apiKey = req.headers["x-api-key"];
-  console.log("apiKey:", apiKey);
+  console.log("--------------------------------------------------");
+  console.log("🔥 /event-receiver endpoint HIT 🔥");
+  console.log("🕒 Time:", new Date().toISOString());
+  console.log("📩 Headers received:");
+  console.log(req.headers);
 
-  res.status(200).json({
-    message: "Event received",
-    receivedAt: new Date().toISOString()
+  console.log("📦 Body received:");
+  console.log(JSON.stringify(req.body, null, 2));
+
+  const apiKey = req.headers["x-api-key"];
+  console.log("🔑 API Key received:", apiKey);
+
+  if (apiKey !== "amy-secret-key-123") {
+    console.log("❌ INVALID API KEY");
+    return res.status(401).json({
+      message: "Invalid API key"
+    });
+  }
+
+  console.log("✅ API KEY VALID");
+  console.log("🎯 Event processed successfully");
+
+  res.json({
+    message: "Event processed successfully",
+    processedAt: new Date().toISOString()
   });
 });
 
-/* ===============================
-   SERVER
-================================ */
+/* =========================
+   START SERVER
+========================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🟢 Server running on port ${PORT}`);
+  console.log("--------------------------------------------------");
+  console.log(`🟢 Server started successfully`);
+  console.log(`🌍 Listening on port: ${PORT}`);
+  console.log(`🕒 Startup time: ${new Date().toISOString()}`);
+  console.log("--------------------------------------------------");
 });
