@@ -1,95 +1,106 @@
-require("dotenv").config(); // Load .env
+require("dotenv").config();
 const express = require("express");
-const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
+const { SchedulerClient, CreateScheduleCommand } = require("@aws-sdk/client-scheduler");
 
 const app = express();
 app.use(express.json());
 
-/* ---------- AWS EventBridge Client ---------- */
-const eventBridgeClient = new EventBridgeClient({
+const schedulerClient = new SchedulerClient({
   region: process.env.AWS_REGION
 });
 
-/* =====================================================
-   1️⃣ Health Check API
-===================================================== */
+/* ===============================
+   1️⃣ HEALTH
+================================ */
 app.get("/health", (req, res) => {
-  console.log(`[${new Date().toISOString()}] GET /health hit`);
-  res.json({
-    status: "OK",
-    service: "event-bridge-demo",
-    time: new Date().toISOString()
-  });
+  console.log(`[${new Date().toISOString()}] GET /health`);
+  res.json({ status: "OK" });
 });
 
-/* =====================================================
-   2️⃣ Publish Event to EventBridge
-   - Adds 2 minutes to event time
-   - Logs everything
-   - Checks AWS connection when called
-===================================================== */
+/* ===============================
+   2️⃣ CREATE SCHEDULE FROM API
+================================ */
 app.post("/publish-event", async (req, res) => {
   const { eventName, payload } = req.body;
+  const executeAt = new Date(Date.now() + 3 * 60 * 1000);
 
-  const eventTime = new Date(Date.now() + 2 * 60 * 1000); // +2 minutes
-  console.log(`[${new Date().toISOString()}] POST /publish-event hit`);
-  console.log("Event Name:", eventName);
-  console.log("Payload:", payload);
-  console.log("Event Time (will be sent to EventBridge):", eventTime.toISOString());
-
-  if (!eventName) {
-    return res.status(400).json({ message: "eventName is required" });
+  if (!executeAt || !eventName) {
+    return res.status(400).json({
+      message: "executeAt and eventName are required"
+    });
   }
 
+  const scheduleName = `schedule-${Date.now()}`;
+
+  console.log("📅 Execute At:", executeAt);
+  console.log("🧾 Payload:", payload);
+
   try {
-    const command = new PutEventsCommand({
-      Entries: [
-        {
-          Source: "custom.node.publisher",
-          DetailType: eventName,
-          EventBusName: "my-event-bus",
-          Time: eventTime,
-          Detail: JSON.stringify({ eventName, eventTime: eventTime.toISOString(), payload })
-        }
-      ]
+    const command = new CreateScheduleCommand({
+      Name: scheduleName,
+      ScheduleExpression: `at(${new Date(executeAt).toISOString()})`,
+      FlexibleTimeWindow: { Mode: "OFF" },
+
+      Target: {
+        Arn: process.env.EVENT_RECEIVER_URL,
+        RoleArn: process.env.SCHEDULER_ROLE_ARN,
+
+        HttpParameters: {
+          HeaderParameters: {
+            "x-api-key": "my-secret-key-123",
+            "Content-Type": "application/json"
+          }
+        },
+
+        Input: JSON.stringify({
+          eventName,
+          payload,
+          executeAt
+        })
+      },
+      ActionAfterCompletion: "DELETE" // 🔥 auto cleanup
     });
 
-    const response = await eventBridgeClient.send(command);
+    await schedulerClient.send(command);
 
-    console.log(`[${new Date().toISOString()}] ✅ EventBridge publish success`);
-    console.log("EventBridge response:", response);
+    console.log("✅ Scheduler created:", scheduleName);
 
     res.json({
-      message: "Event published successfully",
-      eventBridgeResponse: response
+      message: "Event scheduled successfully",
+      scheduleName,
+      executeAt
     });
 
-  } catch (error) {
-    console.error(`[${new Date().toISOString()}] ❌ AWS EventBridge connection failed:`, error.message);
-    res.status(500).json({ message: "Failed to publish event", error: error.message });
+  } catch (err) {
+    console.error("❌ Scheduler error:", err);
+    res.status(500).json({
+      message: "Failed to create scheduler",
+      error: err.message
+    });
   }
 });
 
-/* =====================================================
-   3️⃣ Event Receiver (API Destination Target)
-===================================================== */
+/* ===============================
+   3️⃣ EVENT RECEIVER
+================================ */
 app.post("/event-receiver", (req, res) => {
-  const apiKey = req.headers["x-api-key"];
-  console.log(`[${new Date().toISOString()}] POST /event-receiver hit`);
-  console.log("Headers:", req.headers);
+  console.log("🔥 EVENT RECEIVED 🔥");
+  console.log("Time:", new Date().toISOString());
   console.log("Body:", JSON.stringify(req.body, null, 2));
-  console.log("❌ Invalid API Key:", apiKey);
-
-  console.log("🔥 Event received from EventBridge successfully 🔥");
+  console.log("headers:", JSON.stringify(req.headers, null, 2));
+  const apiKey = req.headers["x-api-key"];
+  console.log("apiKey:", apiKey);
 
   res.status(200).json({
-    message: "Event received successfully",
+    message: "Event received",
     receivedAt: new Date().toISOString()
   });
 });
 
-/* ---------- Server ---------- */
+/* ===============================
+   SERVER
+================================ */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🟢 Server running on port ${PORT} at ${new Date().toISOString()}`);
+  console.log(`🟢 Server running on port ${PORT}`);
 });
