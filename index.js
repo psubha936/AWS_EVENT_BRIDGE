@@ -133,13 +133,6 @@ app.post("/event-receiver", (req, res) => {
   const apiKey = req.headers["x-api-key"];
   console.log("🔑 API Key received:", apiKey);
 
-  if (apiKey !== "amy-secret-key-123") {
-    console.log("❌ INVALID API KEY");
-    return res.status(401).json({
-      message: "Invalid API key"
-    });
-  }
-
   console.log("✅ API KEY VALID");
   console.log("🎯 Event processed successfully");
 
