@@ -78,11 +78,7 @@ app.post("/event-receiver", (req, res) => {
   console.log(`[${new Date().toISOString()}] POST /event-receiver hit`);
   console.log("Headers:", req.headers);
   console.log("Body:", JSON.stringify(req.body, null, 2));
-
-  if (apiKey !== process.env.EVENT_RECEIVER_API_KEY) {
-    console.log("❌ Invalid API Key:", apiKey);
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  console.log("❌ Invalid API Key:", apiKey);
 
   console.log("🔥 Event received from EventBridge successfully 🔥");
 
